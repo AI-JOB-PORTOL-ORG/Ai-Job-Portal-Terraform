@@ -1,0 +1,122 @@
+name: Terraform Plan
+
+on:
+  workflow_call:
+    inputs:
+      aws_region:
+        description: AWS region.
+        required: true
+        type: string
+      aws_role_to_assume:
+        description: IAM role ARN assumed through GitHub OIDC.
+        required: true
+        type: string
+      terraform_version:
+        description: Terraform CLI version.
+        required: false
+        type: string
+        default: 1.6.6
+      terraform_var_file:
+        description: Optional tfvars file path relative to the Terraform working directory.
+        required: false
+        type: string
+        default: ''
+      terraform_working_directory:
+        description: Terraform working directory.
+        required: false
+        type: string
+        default: envs/dev/phase1
+    outputs:
+      plan_artifact:
+        description: Terraform plan artifact name.
+        value: ${{ jobs.terraform-plan.outputs.plan_artifact }}
+  workflow_dispatch:
+    inputs:
+      terraform_var_file:
+        description: Optional tfvars file path relative to the Terraform working directory.
+        required: false
+        type: string
+        default: ''
+      terraform_working_directory:
+        description: Terraform working directory.
+        required: false
+        type: choice
+        default: envs/dev/phase1
+        options:
+          - envs/dev/phase1
+          - envs/dev/phase2
+          - bootstrap/remote-state
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  terraform-plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      plan_artifact: ${{ steps.meta.outputs.plan_artifact }}
+    env:
+      TF_IN_AUTOMATION: true
+      TF_INPUT: false
+      TERRAFORM_WORKING_DIRECTORY: ${{ inputs.terraform_working_directory || 'envs/dev/phase1' }}
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set metadata
+        id: meta
+        working-directory: .
+        run: echo "plan_artifact=terraform-plan-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate AWS OIDC configuration
+        working-directory: .
+        env:
+          AWS_ROLE_TO_ASSUME: ${{ inputs.aws_role_to_assume || vars.AWS_ROLE_TO_ASSUME }}
+        run: test -n "$AWS_ROLE_TO_ASSUME" || (echo "AWS_ROLE_TO_ASSUME variable is required." && exit 1)
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws_role_to_assume || vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ inputs.aws_region || vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version || '1.6.6' }}
+
+      - name: Terraform fmt
+        working-directory: ${{ env.TERRAFORM_WORKING_DIRECTORY }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        working-directory: ${{ env.TERRAFORM_WORKING_DIRECTORY }}
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        working-directory: ${{ env.TERRAFORM_WORKING_DIRECTORY }}
+        run: terraform validate -no-color
+
+      - name: Terraform plan
+        working-directory: ${{ env.TERRAFORM_WORKING_DIRECTORY }}
+        env:
+          TERRAFORM_VAR_FILE: ${{ inputs.terraform_var_file }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/artifacts/terraform"
+          plan_args="-input=false -out=$GITHUB_WORKSPACE/artifacts/terraform/hirevoice.tfplan"
+          if [[ -n "$TERRAFORM_VAR_FILE" ]]; then
+            plan_args="$plan_args -var-file=$TERRAFORM_VAR_FILE"
+          fi
+          terraform plan $plan_args
+          terraform show -no-color "$GITHUB_WORKSPACE/artifacts/terraform/hirevoice.tfplan" > "$GITHUB_WORKSPACE/artifacts/terraform/hirevoice-plan.txt"
+
+      - name: Upload Terraform plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.plan_artifact }}
+          path: artifacts/terraform/**
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,82 @@
+name: Send Notification
+description: Sends HireVoice CI and infrastructure email notifications when SMTP configuration is available.
+
+inputs:
+  status:
+    description: Pipeline status.
+    required: true
+  notification_type:
+    description: success, failure, security-gate-failure, or general.
+    required: false
+    default: general
+  smtp_server:
+    description: SMTP server hostname.
+    required: false
+    default: ''
+  smtp_port:
+    description: SMTP server port.
+    required: false
+    default: ''
+  smtp_username:
+    description: SMTP username.
+    required: false
+    default: ''
+  smtp_password:
+    description: SMTP password.
+    required: false
+    default: ''
+  email_to:
+    description: Notification recipient.
+    required: false
+    default: ''
+  email_from:
+    description: Notification sender.
+    required: false
+    default: ''
+  subject:
+    description: Email subject.
+    required: true
+  body:
+    description: Email body.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check notification configuration
+      id: config
+      shell: bash
+      env:
+        SMTP_SERVER: ${{ inputs.smtp_server }}
+        SMTP_PORT: ${{ inputs.smtp_port }}
+        SMTP_USERNAME: ${{ inputs.smtp_username }}
+        SMTP_PASSWORD: ${{ inputs.smtp_password }}
+        EMAIL_TO: ${{ inputs.email_to }}
+        EMAIL_FROM: ${{ inputs.email_from }}
+      run: |
+        if [[ -n "$SMTP_SERVER" && -n "$SMTP_PORT" && -n "$SMTP_USERNAME" && -n "$SMTP_PASSWORD" && -n "$EMAIL_TO" && -n "$EMAIL_FROM" ]]; then
+          echo "should_send=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "should_send=false" >> "$GITHUB_OUTPUT"
+          echo "SMTP notification configuration is incomplete; skipping email delivery."
+        fi
+
+    - name: Log notification summary
+      shell: bash
+      run: |
+        echo "Notification type: ${{ inputs.notification_type }}"
+        echo "Notification status: ${{ inputs.status }}"
+        echo "Subject: ${{ inputs.subject }}"
+
+    - name: Send email notification
+      if: steps.config.outputs.should_send == 'true'
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: ${{ inputs.smtp_server }}
+        server_port: ${{ inputs.smtp_port }}
+        username: ${{ inputs.smtp_username }}
+        password: ${{ inputs.smtp_password }}
+        subject: ${{ inputs.subject }}
+        to: ${{ inputs.email_to }}
+        from: ${{ inputs.email_from }}
+        body: ${{ inputs.body }}

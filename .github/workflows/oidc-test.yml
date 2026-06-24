@@ -1,0 +1,46 @@
+name: AWS OIDC Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hirevoice-oidc-test-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  oidc-test:
+    name: Verify AWS OIDC Identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validate AWS OIDC configuration
+        env:
+          AWS_ROLE_TO_ASSUME: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          test -n "$AWS_ROLE_TO_ASSUME" || (echo "AWS_ROLE_TO_ASSUME variable is required." && exit 1)
+          test -n "$AWS_REGION" || (echo "AWS_REGION variable is required." && exit 1)
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Get caller identity
+        run: |
+          mkdir -p artifacts/aws
+          aws sts get-caller-identity > artifacts/aws/sts-caller-identity.json
+          cat artifacts/aws/sts-caller-identity.json
+
+      - name: Upload caller identity result
+        uses: actions/upload-artifact@v4
+        with:
+          name: aws-oidc-sts-caller-identity
+          path: artifacts/aws/sts-caller-identity.json
+          if-no-files-found: error
+          retention-days: 7

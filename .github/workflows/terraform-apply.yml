@@ -1,0 +1,164 @@
+name: Terraform Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      terraform_var_file:
+        description: Optional tfvars file path relative to the Terraform working directory.
+        required: false
+        type: string
+        default: ''
+      terraform_working_directory:
+        description: Terraform working directory.
+        required: false
+        type: choice
+        default: envs/dev/phase1
+        options:
+          - envs/dev/phase1
+          - envs/dev/phase2
+          - bootstrap/remote-state
+      environment:
+        description: GitHub environment used for manual approval.
+        required: false
+        type: string
+        default: production
+  workflow_call:
+    inputs:
+      aws_region:
+        description: AWS region.
+        required: true
+        type: string
+      aws_role_to_assume:
+        description: IAM role ARN assumed through GitHub OIDC.
+        required: true
+        type: string
+      terraform_var_file:
+        description: Optional tfvars file path relative to the Terraform working directory.
+        required: false
+        type: string
+        default: ''
+      terraform_working_directory:
+        description: Terraform working directory.
+        required: false
+        type: string
+        default: envs/dev/phase1
+      environment:
+        description: GitHub environment used for manual approval.
+        required: false
+        type: string
+        default: production
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  config:
+    name: Resolve Terraform Configuration
+    runs-on: ubuntu-latest
+    outputs:
+      aws_region: ${{ steps.config.outputs.aws_region }}
+      aws_role_to_assume: ${{ steps.config.outputs.aws_role_to_assume }}
+      terraform_var_file: ${{ steps.config.outputs.terraform_var_file }}
+      terraform_working_directory: ${{ steps.config.outputs.terraform_working_directory }}
+    steps:
+      - name: Resolve variables
+        id: config
+        env:
+          INPUT_AWS_REGION: ${{ inputs.aws_region }}
+          INPUT_AWS_ROLE_TO_ASSUME: ${{ inputs.aws_role_to_assume }}
+          INPUT_TERRAFORM_VAR_FILE: ${{ inputs.terraform_var_file }}
+          INPUT_TERRAFORM_WORKING_DIRECTORY: ${{ inputs.terraform_working_directory }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ROLE_TO_ASSUME: ${{ vars.AWS_ROLE_TO_ASSUME }}
+        run: |
+          echo "aws_region=${INPUT_AWS_REGION:-${AWS_REGION:-us-east-1}}" >> "$GITHUB_OUTPUT"
+          echo "aws_role_to_assume=${INPUT_AWS_ROLE_TO_ASSUME:-$AWS_ROLE_TO_ASSUME}" >> "$GITHUB_OUTPUT"
+          echo "terraform_var_file=$INPUT_TERRAFORM_VAR_FILE" >> "$GITHUB_OUTPUT"
+          echo "terraform_working_directory=${INPUT_TERRAFORM_WORKING_DIRECTORY:-envs/dev/phase1}" >> "$GITHUB_OUTPUT"
+
+  plan:
+    name: Terraform Plan
+    needs: config
+    uses: ./.github/workflows/terraform-plan.yml
+    with:
+      aws_region: ${{ needs.config.outputs.aws_region }}
+      aws_role_to_assume: ${{ needs.config.outputs.aws_role_to_assume }}
+      terraform_var_file: ${{ needs.config.outputs.terraform_var_file }}
+      terraform_working_directory: ${{ needs.config.outputs.terraform_working_directory }}
+    secrets: inherit
+
+  apply:
+    name: Terraform Apply
+    needs:
+      - config
+      - plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: ${{ inputs.environment || 'production' }}
+    env:
+      TF_IN_AUTOMATION: true
+      TF_INPUT: false
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Download Terraform plan
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.plan.outputs.plan_artifact }}
+          path: artifacts/terraform
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.config.outputs.aws_role_to_assume }}
+          aws-region: ${{ needs.config.outputs.aws_region }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: Terraform init
+        working-directory: ${{ needs.config.outputs.terraform_working_directory }}
+        run: terraform init -input=false
+
+      - name: Terraform apply
+        working-directory: ${{ needs.config.outputs.terraform_working_directory }}
+        run: terraform apply -input=false -auto-approve "$GITHUB_WORKSPACE/artifacts/terraform/hirevoice.tfplan"
+
+  notify:
+    name: Notification
+    needs:
+      - config
+      - plan
+      - apply
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout notification action
+        uses: actions/checkout@v4
+
+      - name: Send Terraform notification
+        uses: ./.github/actions/send-notification
+        with:
+          status: ${{ (needs.plan.result == 'success' && needs.apply.result == 'success') && 'success' || 'failure' }}
+          notification_type: general
+          smtp_server: ${{ secrets.SMTP_SERVER }}
+          smtp_port: ${{ secrets.SMTP_PORT }}
+          smtp_username: ${{ secrets.SMTP_USERNAME }}
+          smtp_password: ${{ secrets.SMTP_PASSWORD }}
+          email_to: ${{ vars.NOTIFICATION_EMAIL_TO }}
+          email_from: ${{ vars.NOTIFICATION_EMAIL_FROM }}
+          subject: HireVoice Terraform apply ${{ (needs.plan.result == 'success' && needs.apply.result == 'success') && 'succeeded' || 'failed' }} - ${{ github.sha }}
+          body: |
+            HireVoice Terraform apply completed.
+
+            Repository: ${{ github.repository }}
+            Commit: ${{ github.sha }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Stage results:
+            Plan: ${{ needs.plan.result }}
+            Apply: ${{ needs.apply.result }}

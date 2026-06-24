@@ -1,0 +1,54 @@
+#!/bin/bash
+set -euxo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+APP_DIR="/opt/hirevoice"
+ENV_FILE="$APP_DIR/backend.env"
+BACKEND_IMAGE="${docker_image}"
+RUN_SEED_DATA="${run_seed_data}"
+
+mkdir -p "$APP_DIR"
+chmod 700 "$APP_DIR"
+
+apt update
+apt install -y docker.io awscli jq ca-certificates curl
+systemctl enable docker
+systemctl start docker
+
+RDS_SECRET_JSON="$(aws secretsmanager get-secret-value --region '${aws_region}' --secret-id '${rds_secret_arn}' --query SecretString --output text)"
+DB_USER="$(echo "$RDS_SECRET_JSON" | jq -r '.username')"
+DB_PASSWORD="$(echo "$RDS_SECRET_JSON" | jq -r '.password')"
+JWT_SECRET="$(aws secretsmanager get-secret-value --region '${aws_region}' --secret-id '${jwt_secret_arn}' --query SecretString --output text)"
+GROQ_API_KEY="$(aws secretsmanager get-secret-value --region '${aws_region}' --secret-id '${groq_secret_arn}' --query SecretString --output text)"
+
+umask 077
+cat > "$ENV_FILE" <<EOF
+DB_HOST=${db_host}
+DB_PORT=${db_port}
+DB_USER=$DB_USER
+DB_PASSWORD=$DB_PASSWORD
+DB_SSLMODE=require
+DB_NAME=hirevoice
+AUTH_DB_NAME=${auth_db_name}
+JOBS_DB_NAME=${jobs_db_name}
+JWT_SECRET=$JWT_SECRET
+GROQ_API_KEY=$GROQ_API_KEY
+SCREEN_PASS_THRESHOLD=${screen_pass_threshold}
+FRONTEND_ORIGIN=http://localhost
+EOF
+
+docker pull "$BACKEND_IMAGE"
+docker run --rm --entrypoint test "$BACKEND_IMAGE" -f /app/common/db_bootstrap.py
+docker run --rm --env-file "$ENV_FILE" "$BACKEND_IMAGE" python -m common.db_bootstrap
+
+if [ "$RUN_SEED_DATA" = "true" ]; then
+  docker run --rm --env-file "$ENV_FILE" "$BACKEND_IMAGE" python seed.py
+fi
+
+docker rm -f hirevoice-backend || true
+docker run -d \
+  --name hirevoice-backend \
+  --restart unless-stopped \
+  --env-file "$ENV_FILE" \
+  -p 80:8000 \
+  "$BACKEND_IMAGE"
