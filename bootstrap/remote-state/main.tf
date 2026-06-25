@@ -47,3 +47,12 @@ resource "aws_dynamodb_table" "terraform_locks" {
     Name = var.lock_table_name
   })
 }
+import {
+  to = aws_s3_bucket.terraform_state
+  id = "hirevoice-terraform-state-334401495505"
+}
+
+import {
+  to = aws_dynamodb_table.terraform_locks
+  id = "hirevoice-terraform-locks"
+}
