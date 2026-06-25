@@ -13,10 +13,9 @@ jobs:
   validate-plan:
     name: Validate & Plan
     runs-on: ubuntu-latest
-    # 🎯 Tell all steps in this job to run inside your terraform directory
     defaults:
       run:
-        working-directory: ../bootstrap/remote-state # 👈 CHANGE THIS TO YOUR FOLDER NAME
+        working-directory: ./bootstrap/remote-state # 👈 Corrected relative path
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -44,10 +43,9 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     environment: production
-    # 🎯 Apply the same directory rule to the apply job
     defaults:
       run:
-        working-directory:  ../bootstrap/remote-state # 👈 CHANGE THIS TO YOUR FOLDER NAME
+        working-directory: ./bootstrap/remote-state # 👈 Corrected relative path
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
