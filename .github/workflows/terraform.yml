@@ -1,11 +1,5 @@
 name: Terraform
 
-# Infra pipeline: fmt → validate → plan (on PRs), then a gated apply on main.
-#
-# Required GitHub Secrets:
-#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY  (infra provisioning)
-#   HF_API_TOKEN                               (TF_VAR_hf_api_token)
-
 on:
   push:
     branches: [main]
@@ -19,6 +13,10 @@ jobs:
   validate-plan:
     name: Validate & Plan
     runs-on: ubuntu-latest
+    # 🎯 Tell all steps in this job to run inside your terraform directory
+    defaults:
+      run:
+        working-directory: ../bootstrap/remote-state # 👈 CHANGE THIS TO YOUR FOLDER NAME
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -40,13 +38,16 @@ jobs:
       - name: Terraform Plan
         run: terraform plan -input=false
    
-
   apply:
     name: Apply (gated)
     needs: validate-plan
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    environment: production # manual approval before any apply
+    environment: production
+    # 🎯 Apply the same directory rule to the apply job
+    defaults:
+      run:
+        working-directory:  ../bootstrap/remote-state # 👈 CHANGE THIS TO YOUR FOLDER NAME
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -62,4 +63,3 @@ jobs:
         run: terraform init
       - name: Terraform Apply
         run: terraform apply -auto-approve -input=false
-      
